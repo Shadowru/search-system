@@ -89,49 +89,46 @@ class SystemKnowledgeBase:
             return ""
         return ftfy.fix_text(str(text))
 
-    def preprocess_text(self, text):
-        """Очищает текст, проверяет ВСЕ варианты нормальной формы слова."""
-        if not text: 
-            return ""
+    def preprocess_text(self, text, expand_synonyms=True):
+        """
+        Теперь метод умеет работать в двух режимах:
+        1. expand_synonyms=True: Возвращает строку ТОЛЬКО из синонимов (если они есть).
+        2. expand_synonyms=False: Возвращает просто очищенный текст (лемматизированный).
+        """
+        if not text: return ""
         
         text = str(text).lower()
         text = re.sub(r'<[^>]+>', ' ', text)
         text = re.sub(r'[^\w\s]', ' ', text)
         
         words = text.split()
-        processed_words = []
+        result_words = []
         
         for word in words:
-            if word in self.stop_words or len(word) < 2:
-                continue
+            if word in self.stop_words or len(word) < 2: continue
             
-            # Добавляем исходное слово (чтобы fuzzy search работал и по точному вхождению)
-            processed_words.append(word)
-
-            # Получаем ВСЕ варианты разбора слова
-            # Например, для "кружки": [OpencorporaTag('NOUN,inan,femn...'), OpencorporaTag('NOUN,inan,masc...')]
+            # Лемматизация
             parses = self.morph.parse(word)
-            
-            # Собираем уникальные нормальные формы
-            # Для "кружки" это будет {'кружка', 'кружок'}
             normal_forms = set(p.normal_form for p in parses)
             
-            synonym_found = False
-            
-            # Проверяем каждую нормальную форму: есть ли она в синонимах?
+            # Поиск синонимов
+            synonyms_found = []
             for nf in normal_forms:
                 if nf in self.synonyms:
-                    processed_words.append(self.synonyms[nf])
-                    synonym_found = True
+                    synonyms_found.append(self.synonyms[nf])
             
-            # Если это не синоним, просто добавляем самую вероятную нормальную форму
-            # (чтобы "системы" превратилось в "система" для поиска)
-            if not synonym_found:
-                processed_words.append(parses[0].normal_form)
+            if expand_synonyms:
+                # Если нужны синонимы - возвращаем ИХ
+                if synonyms_found:
+                    result_words.extend(synonyms_found)
+                else:
+                    # Если синонимов нет, оставляем исходное слово (нормализованное)
+                    result_words.append(parses[0].normal_form)
+            else:
+                # Если синонимы НЕ нужны - возвращаем просто слово
+                result_words.append(word)
                 
-        # Убираем дубликаты слов в итоговой строке для чистоты
-        unique_words = list(dict.fromkeys(processed_words))
-        return " ".join(unique_words)
+        return " ".join(list(dict.fromkeys(result_words)))
     
     def load_data_from_csv(self, systems_csv_path, contacts_csv_path):
         """Загружает, чистит, убирает дубли и объединяет данные."""
@@ -276,59 +273,64 @@ class SystemKnowledgeBase:
         return cursor.fetchone()
 
     def fuzzy_search(self, query, limit=5):
-        """
-        Умный поиск с весами и предобработкой.
-        """
         df = pd.read_sql("SELECT * FROM systems", self.conn)
         
-        # 1. Предобработка запроса (удаление стоп-слов, синонимы)
-        clean_query = self.preprocess_text(query)
-        logging.info(f"Обработанный запрос: '{clean_query}'")
+        # 1. Формируем ДВА варианта запроса
+        # Вариант А: То, что ввел юзер (очищенное) -> "кружки"
+        query_raw = self.preprocess_text(query, expand_synonyms=False)
+        
+        # Вариант Б: Синонимы -> "удо дополнительное"
+        query_synonyms = self.preprocess_text(query, expand_synonyms=True)
+        
+        logging.info(f"Raw: '{query_raw}' | Synonyms: '{query_synonyms}'")
         
         results = []
         
         for _, row in df.iterrows():
-            # 2. Предобработка полей базы
-            clean_title = self.preprocess_text(row['product_name'])
-            clean_desc = self.preprocess_text(row['description'])
-            clean_wiki = self.preprocess_text(row['wiki_content'])
+            # Предобработка полей базы (без расширения синонимов, просто чистый текст)
+            clean_title = self.preprocess_text(row['product_name'], expand_synonyms=False)
+            clean_desc = self.preprocess_text(row['description'], expand_synonyms=False)
+            clean_wiki = self.preprocess_text(row['wiki_content'], expand_synonyms=False)
             
-            # 3. Сравнение (token_set_ratio лучше находит вхождения слов)
-            score_title = fuzz.token_set_ratio(clean_query, clean_title)
-            score_desc = fuzz.token_set_ratio(clean_query, clean_desc)
+            # Сравниваем с RAW запросом ("кружки")
+            score_raw = max(
+                fuzz.token_set_ratio(query_raw, clean_title),
+                fuzz.token_set_ratio(query_raw, clean_desc)
+            )
             
-            # Wiki учитываем с меньшим весом и только если там есть контент
-            score_wiki = 0
+            # Сравниваем с SYNONYMS запросом ("удо")
+            # Если синонимы отличаются от raw, считаем и их
+            score_syn = 0
+            if query_raw != query_synonyms:
+                score_syn = max(
+                    fuzz.token_set_ratio(query_synonyms, clean_title),
+                    fuzz.token_set_ratio(query_synonyms, clean_desc)
+                )
+            
+            # Берем МАКСИМАЛЬНЫЙ балл из двух стратегий
+            # То есть: если совпало по слову "кружки" - отлично.
+            # Если не совпало, но совпало по "УДО" - тоже отлично.
+            base_score = max(score_raw, score_syn)
+            
+            # Wiki учитываем с меньшим весом
+            wiki_score = 0
             if clean_wiki:
-                score_wiki = fuzz.token_set_ratio(clean_query, clean_wiki)
+                wiki_score = fuzz.token_set_ratio(query_synonyms, clean_wiki) # Wiki лучше искать по синонимам
             
-            # 4. Расчет итогового веса
-            # Название: x1.5
-            # Описание: x1.0
-            # Wiki: x0.5
+            # Итоговый балл
+            final_score = (base_score * 1.5) + (wiki_score * 0.5)
+            final_score = final_score / 2
             
-            # Дополнительный бонус, если все слова запроса есть в названии
-            boost = 0
-            query_words = clean_query.split()
-            if query_words and all(w in clean_title for w in query_words):
-                boost = 20
-
-            status_boost = 0
+            # Бонусы (статус и т.д.)
             status = str(row['status']).lower()
-            # Если статус содержит "эксплуатации" или "прод", даем бонус
-            if 'эксплуатация' in status or 'prod' in status:
-                status_boost = 15  # Существенный бонус, чтобы поднять активные системы
-
-            # Итоговая формула
-            final_score = (score_title * 1.5) + (score_desc * 1.0) + (score_wiki * 0.5) + boost + status_boost
-            final_score = final_score / 4
+            if 'эксплуатации' in status or 'prod' in status:
+                final_score += 10
             
-            if final_score > 45: # Порог отсечения
+            if final_score > 45:
                 res = row.to_dict()
                 res['search_score'] = final_score
                 results.append(res)
         
-        # Сортировка по убыванию релевантности
         results.sort(key=lambda x: x['search_score'], reverse=True)
         return results[:limit]
 
