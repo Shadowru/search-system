@@ -6,6 +6,7 @@ import re
 from atlassian import Confluence
 from rapidfuzz import fuzz
 import logging
+import pymorphy2
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,6 +18,8 @@ class SystemKnowledgeBase:
         self._init_db()
 
         # --- НАСТРОЙКИ ДЛЯ УМНОГО ПОИСКА ---
+        self.morph = pymorphy2.MorphAnalyzer()
+
         
         # 1. Стоп-слова (шум, который нужно игнорировать)
         self.stop_words = {
@@ -28,7 +31,6 @@ class SystemKnowledgeBase:
         # 2. Синонимы (что ищут -> как это может быть записано официально)
         self.synonyms = {
             "сад": "доу дошкольное",
-            "сады": "доу дошкольное",
             "садик": "доу дошкольное",
             "школа": "оу сош общее образование",
             "колледж": "спо профтех",
@@ -39,7 +41,7 @@ class SystemKnowledgeBase:
             "проход": "скуд турникет",
             "ученик": "обучающийся учащийся",
         }
-
+        
     def _init_db(self):
         """Создает структуру таблицы, если она не существует."""
         cursor = self.conn.cursor()
@@ -87,28 +89,39 @@ class SystemKnowledgeBase:
         return ftfy.fix_text(str(text))
 
     def preprocess_text(self, text):
-        """Очищает текст перед поиском: удаляет мусор, раскрывает синонимы."""
+        """Очищает текст, приводит слова к нормальной форме и раскрывает синонимы."""
         if not text: 
             return ""
         
-        # 1. Нижний регистр
+        # 1. Нижний регистр и очистка
         text = str(text).lower()
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'[^\w\s]', ' ', text)
         
-        # 2. Очистка от HTML тегов (если они остались) и спецсимволов
-        text = re.sub(r'<[^>]+>', ' ', text) # Удалить теги
-        text = re.sub(r'[^\w\s]', ' ', text) # Удалить пунктуацию
+        words = text.split()
+        processed_words = []
         
-        # 3. Раскрытие синонимов
-        for word, replacement in self.synonyms.items():
-            # Если слово есть в тексте как отдельное слово
-            if re.search(r'\b' + word + r'\b', text):
-                text += " " + replacement
-        
-        # 4. Удаление стоп-слов
-        words = [w for w in text.split() if w not in self.stop_words and len(w) > 1]
-        
-        return " ".join(words)
-
+        for word in words:
+            if word in self.stop_words or len(word) < 2:
+                continue
+                
+            # 2. Лемматизация (приведение к нормальной форме)
+            # "кружки" -> "кружок"
+            parsed = self.morph.parse(word)[0]
+            normal_form = parsed.normal_form
+            
+            processed_words.append(word) # Оставляем исходное слово
+            
+            # Если нормальная форма отличается, добавляем и её (для надежности поиска)
+            if normal_form != word:
+                processed_words.append(normal_form)
+            
+            # 3. Проверка синонимов по нормальной форме
+            if normal_form in self.synonyms:
+                processed_words.append(self.synonyms[normal_form])
+                
+        return " ".join(processed_words)
+    
     def load_data_from_csv(self, systems_csv_path, contacts_csv_path):
         """Загружает, чистит, убирает дубли и объединяет данные."""
         logging.info("Загрузка данных из CSV...")
