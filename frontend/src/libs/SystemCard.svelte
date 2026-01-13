@@ -9,7 +9,7 @@
   function getStatusClass(status) {
     if (!status) return 'status-gray';
     const s = status.toLowerCase();
-    if (s.includes('эксплуатации') || s.includes('prod')) return 'status-green';
+    if (s.includes('эксплуатация') || s.includes('prod')) return 'status-green';
     if (s.includes('разработ') || s.includes('dev')) return 'status-blue';
     if (s.includes('вывод') || s.includes('архив')) return 'status-red';
     return 'status-gray';
@@ -59,7 +59,7 @@
   </p>
 
   <!-- Кнопка AI Summary -->
-  {#if system.wiki_content} <!-- Показываем кнопку только если есть что анализировать -->
+  {#if system.has_wiki_content}
       <div class="ai-section">
         <button class="ai-btn" on:click={toggleSummary}>
             {#if isExpanded}

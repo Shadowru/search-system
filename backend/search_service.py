@@ -64,6 +64,7 @@ class SearchResultItem(BaseModel):
     jira_url: Optional[str] = None
     repo_url: Optional[str] = None
     search_score: float
+    has_wiki_content: bool = False
 
 # --- Вспомогательные функции ---
 def verify_password(plain_password, hashed_password):
@@ -182,27 +183,36 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 @app.get("/search", response_model=List[SearchResultItem])
 async def search_systems(
-    q: str = Query(..., min_length=2, description="Поисковый запрос"),
-    limit: int = Query(10, ge=1, le=50, description="Максимальное кол-во результатов"),
+    q: str = Query(..., min_length=2),
+    limit: int = Query(10, ge=1, le=50),
     current_user: tuple = Depends(get_current_user)
 ):
-    """
-    Выполняет нечеткий поиск по системам.
-    """
     if not q.strip():
         return []
-
+    
     logger.info(f"User {current_user[0]} searching for: {q}")
     
     try:
-        results = kb.fuzzy_search(q, limit=limit)
-        clean_results = clean_nans(results)
+        # Получаем "сырые" результаты из базы (там есть поле wiki_content)
+        raw_results = kb.fuzzy_search(q, limit=limit)
         
-        return clean_results
-    except Exception as e:
-        logger.error(f"Ошибка при поиске: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        processed_results = []
+        for res in raw_results:
+            # 2. Вычисляем флаг: True, если контент есть и он не пустой
+            content = res.get('wiki_content')
+            res['has_wiki_content'] = bool(content and str(content).strip())
+            
+            # Удаляем сам текст, чтобы не гонять мегабайты данных в списке
+            if 'wiki_content' in res:
+                del res['wiki_content']
+                
+            processed_results.append(res)
 
+        return clean_nans(processed_results)
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    
 if __name__ == "__main__":
     import uvicorn
     # Запуск сервера: host="0.0.0.0" делает его доступным в локальной сети
