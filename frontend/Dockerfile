@@ -1,16 +1,16 @@
-# Этап 1: Сборка (Build)
-FROM node:18-alpine as build
+# Р­С‚Р°Рї 1: РЎР±РѕСЂРєР° (Build)
+FROM node:22-alpine as build
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
 RUN npm run build
 
-# Этап 2: Запуск (Production)
+# Р­С‚Р°Рї 2: Р—Р°РїСѓСЃРє (Production)
 FROM nginx:alpine
-# Копируем собранные файлы Svelte в папку Nginx
+# РљРѕРїРёСЂСѓРµРј СЃРѕР±СЂР°РЅРЅС‹Рµ С„Р°Р№Р»С‹ Svelte РІ РїР°РїРєСѓ Nginx
 COPY --from=build /app/dist /usr/share/nginx/html
-# Копируем наш конфиг Nginx
+# РљРѕРїРёСЂСѓРµРј РЅР°С€ РєРѕРЅС„РёРі Nginx
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
