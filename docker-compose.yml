@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # --- TRAEFIK ---
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: always
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Редирект HTTP -> HTTPS
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      # SSL (Let's Encrypt)
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      # Читаем email из .env
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+  # --- BACKEND ---
+  backend:
+    build: ./backend
+    container_name: search_backend
+    restart: always
+    # Прокидываем переменные внутрь контейнера Python (чтобы os.getenv их видел)
+    env_file:
+      - .env
+    volumes:
+      - ./backend/systems_kb.db:/app/systems_kb.db
+    labels:
+      - "traefik.enable=true"
+      # Читаем домен из .env
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN_NAME}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=myresolver"
+      - "traefik.http.middlewares.api-strip.stripprefix.prefixes=/api"
+      - "traefik.http.routers.backend.middlewares=api-strip"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+
+  # --- FRONTEND ---
+  frontend:
+    build: ./frontend
+    container_name: search_frontend
+    restart: always
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      # Читаем домен из .env
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=myresolver"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
