@@ -1,31 +1,54 @@
 <script>
-  import SystemCard from './libs/SystemCard.svelte';
-  
+  import { onMount } from "svelte";
+  import SystemCard from "./libs/SystemCard.svelte";
+  import Login from "./libs/Login.svelte";
+
+  let token = null;
   let query = "";
   let results = [];
   let isLoading = false;
   let error = null;
   let hasSearched = false;
 
+  onMount(() => {
+    token = localStorage.getItem("token");
+  });
+
+  function handleLogout() {
+    localStorage.removeItem("token");
+    token = null;
+    results = [];
+    query = "";
+  }
+
   async function handleSearch() {
     if (!query.trim()) return;
-    
+
     isLoading = true;
     error = null;
     results = [];
     hasSearched = true;
 
     try {
-      // Запрос к твоему локальному API
-      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=10`);
-      
-      if (!response.ok) {
-        throw new Error('Ошибка сервера');
+      const response = await fetch(
+        `/api/search?q=${encodeURIComponent(query)}&limit=10`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`, // <--- ОТПРАВЛЯЕМ ТОКЕН
+          },
+        },
+      );
+
+      if (response.status === 401) {
+        handleLogout(); // Токен протух, выкидываем на логин
+        return;
       }
-      
+
+      if (!response.ok) throw new Error("Ошибка сервера");
+
       results = await response.json();
     } catch (err) {
-      error = "Не удалось загрузить данные. Убедитесь, что backend запущен.";
+      error = "Ошибка загрузки данных.";
       console.error(err);
     } finally {
       isLoading = false;
@@ -33,53 +56,57 @@
   }
 
   function handleKeydown(e) {
-    if (e.key === 'Enter') {
-      handleSearch();
-    }
+    if (e.key === "Enter") handleSearch();
   }
 </script>
 
 <main>
-  <div class="container">
-    <header>
-      <h1>🔍 База Знаний Систем</h1>
-      <p>Найдите ответственного, документацию или репозиторий</p>
-    </header>
+  {#if !token}
+    <!-- Если нет токена, показываем логин -->
+    <Login on:loginSuccess={() => (token = localStorage.getItem("token"))} />
+  {:else}
+    <!-- Если есть токен, показываем поиск -->
+    <div class="container">
+      <header>
+        <div class="top-bar">
+          <h1>🔍 База Знаний</h1>
+          <button class="logout-btn" on:click={handleLogout}>Выйти</button>
+        </div>
+        <p>Найдите ответственного, документацию или репозиторий</p>
+      </header>
 
-    <div class="search-box">
-      <input 
-        type="text" 
-        bind:value={query} 
-        on:keydown={handleKeydown}
-        placeholder="Например: зачисление в сад..." 
-      />
-      <button on:click={handleSearch} disabled={isLoading}>
-        {isLoading ? 'Поиск...' : 'Найти'}
-      </button>
-    </div>
+      <div class="search-box">
+        <input
+          type="text"
+          bind:value={query}
+          on:keydown={handleKeydown}
+          placeholder="Например: зачисление в сад..."
+        />
+        <button on:click={handleSearch} disabled={isLoading}>
+          {isLoading ? "..." : "Найти"}
+        </button>
+      </div>
 
-    <div class="results-area">
-      {#if error}
-        <div class="error">{error}</div>
-      {/if}
-
-      {#if !isLoading && hasSearched && results.length === 0 && !error}
-        <div class="empty-state">Ничего не найдено 😔 Попробуйте другой запрос.</div>
-      {/if}
-
-      <div class="grid">
-        {#each results as system (system.id)}
-          <SystemCard {system} />
-        {/each}
+      <div class="results-area">
+        {#if error}<div class="error">{error}</div>{/if}
+        {#if !isLoading && hasSearched && results.length === 0 && !error}
+          <div class="empty-state">Ничего не найдено 😔</div>
+        {/if}
+        <div class="grid">
+          {#each results as system (system.id)}
+            <SystemCard {system} />
+          {/each}
+        </div>
       </div>
     </div>
-  </div>
+  {/if}
 </main>
 
 <style>
   :global(body) {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
     background-color: #f3f4f6;
     color: #1f2937;
   }
@@ -91,6 +118,25 @@
   .container {
     max-width: 800px;
     margin: 0 auto;
+  }
+
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .logout-btn {
+    background: transparent;
+    color: #6b7280;
+    border: 1px solid #d1d5db;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+  }
+  
+  .logout-btn:hover {
+    background: #e5e7eb;
+    color: black;
   }
 
   header {

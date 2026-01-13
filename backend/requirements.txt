@@ -5,3 +5,6 @@ rapidfuzz
 atlassian-python-api
 ftfy
 openpyxl
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart

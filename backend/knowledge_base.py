@@ -59,8 +59,28 @@ class SystemKnowledgeBase:
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                hashed_password TEXT
+            )
+        ''')
         self.conn.commit()
+        
+    def get_user(self, username):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT username, hashed_password FROM users WHERE username = ?", (username,))
+        return cursor.fetchone()
 
+    def create_user(self, username, hashed_password):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("INSERT INTO users (username, hashed_password) VALUES (?, ?)", (username, hashed_password))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        
     def fix_encoding(self, text):
         if pd.isna(text):
             return ""
