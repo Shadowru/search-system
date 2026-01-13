@@ -12,12 +12,9 @@ services:
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
-      # Редирект HTTP -> HTTPS
       - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
-      # SSL (Let's Encrypt)
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      # Читаем email из .env
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
     ports:
@@ -33,14 +30,18 @@ services:
     build: ./backend
     container_name: search_backend
     restart: always
-    # Прокидываем переменные внутрь контейнера Python (чтобы os.getenv их видел)
     env_file:
       - .env
+    environment:
+      # Обращаемся к контейнеру 'ollama' по порту 11434
+      - OLLAMA_URL=http://ollama:11434/api/generate
+      - OLLAMA_MODEL=llama3
     volumes:
       - ./backend/systems_kb.db:/app/systems_kb.db
+    depends_on:
+      - ollama # Ждем запуска ollama
     labels:
       - "traefik.enable=true"
-      # Читаем домен из .env
       - "traefik.http.routers.backend.rule=Host(`${DOMAIN_NAME}`) && PathPrefix(`/api`)"
       - "traefik.http.routers.backend.entrypoints=websecure"
       - "traefik.http.routers.backend.tls.certresolver=myresolver"
@@ -57,8 +58,28 @@ services:
       - backend
     labels:
       - "traefik.enable=true"
-      # Читаем домен из .env
       - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME}`)"
       - "traefik.http.routers.frontend.entrypoints=websecure"
       - "traefik.http.routers.frontend.tls.certresolver=myresolver"
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
+
+  # --- OLLAMA (AI) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: always
+    volumes:
+      - ollama_data:/root/.ollama # Сохраняем модели на диске
+    ports:
+      - "11434:11434" # Оставляем доступ снаружи для удобства (можно убрать)
+    # Если у вас есть NVIDIA GPU, раскомментируйте блок ниже:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  ollama_data: # Объявляем том для моделей

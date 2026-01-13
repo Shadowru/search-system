@@ -8,6 +8,7 @@ from rapidfuzz import fuzz
 import logging
 import pymorphy2
 
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -257,6 +258,12 @@ class SystemKnowledgeBase:
 
         self.conn.commit()
         logging.info("Синхронизация завершена.")
+    
+    def get_system_wiki(self, sys_id):
+        """Возвращает текст Wiki для конкретной системы."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT wiki_content, product_name FROM systems WHERE id = ?", (sys_id,))
+        return cursor.fetchone()
 
     def fuzzy_search(self, query, limit=5):
         """
@@ -296,9 +303,15 @@ class SystemKnowledgeBase:
             if query_words and all(w in clean_title for w in query_words):
                 boost = 20
 
-            final_score = (score_title * 1.5) + (score_desc * 1.0) + (score_wiki * 0.5) + boost
-            # Нормализация (делим на сумму весов ~3)
-            final_score = final_score / 3
+            status_boost = 0
+            status = str(row['status']).lower()
+            # Если статус содержит "эксплуатации" или "прод", даем бонус
+            if 'эксплуатация' in status or 'prod' in status:
+                status_boost = 15  # Существенный бонус, чтобы поднять активные системы
+
+            # Итоговая формула
+            final_score = (score_title * 1.5) + (score_desc * 1.0) + (score_wiki * 0.5) + boost + status_boost
+            final_score = final_score / 4
             
             if final_score > 45: # Порог отсечения
                 res = row.to_dict()

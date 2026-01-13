@@ -3,6 +3,7 @@ import os
 import math
 from typing import List, Optional
 from datetime import datetime, timedelta
+import httpx
 
 from fastapi import FastAPI, Query, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -111,6 +112,55 @@ def clean_nans(data_list):
     return cleaned
 
 # --- Эндпоинты ---
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+
+class SummaryResponse(BaseModel):
+    summary: str
+
+@app.get("/summarize/{sys_id}", response_model=SummaryResponse)
+async def summarize_system(sys_id: int, current_user: tuple = Depends(get_current_user)):
+    """
+    Отправляет контент Wiki в Ollama для генерации краткой выжимки.
+    """
+    data = kb.get_system_wiki(sys_id)
+    
+    if not data or not data[0]:
+        return {"summary": "Для этой системы нет данных из Wiki."}
+    
+    wiki_text = data[0]
+    product_name = data[1]
+    
+    # Обрезаем текст, чтобы не перегрузить контекст модели (например, первые 3000 символов)
+    truncated_text = wiki_text[:3000]
+    
+    prompt = f"""
+    Ты технический писатель. Проанализируй следующий текст документации о системе "{product_name}".
+    Сделай краткую выжимку (summary) на русском языке: для чего нужна система, кто основные пользователи и какие главные функции.
+    Не используй вводные фразы, сразу пиши суть. Максимум 3-4 предложения.
+    
+    Текст:
+    {truncated_text}
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            return {"summary": result.get("response", "Не удалось получить ответ от модели.")}
+            
+    except Exception as e:
+        logger.error(f"Ollama error: {e}")
+        return {"summary": "Ошибка связи с нейросетью. Убедитесь, что Ollama запущена."}
 
 @app.get("/health")
 async def health_check():
