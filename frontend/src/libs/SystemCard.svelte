@@ -10,7 +10,7 @@
     if (!status) return 'status-gray';
     const s = status.toLowerCase();
     if (s.includes('эксплуатация') || s.includes('prod')) return 'status-green';
-    if (s.includes('разработ') || s.includes('dev')) return 'status-blue';
+    if (s.includes('создание') || s.includes('dev')) return 'status-blue';
     if (s.includes('вывод') || s.includes('архив')) return 'status-red';
     return 'status-gray';
   }
@@ -18,7 +18,6 @@
   async function toggleSummary() {
     isExpanded = !isExpanded;
     
-    // Если открываем и саммари еще нет - загружаем
     if (isExpanded && !summary) {
       isLoadingSummary = true;
       try {

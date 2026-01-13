@@ -90,11 +90,10 @@ class SystemKnowledgeBase:
         return ftfy.fix_text(str(text))
 
     def preprocess_text(self, text):
-        """Очищает текст, приводит слова к нормальной форме и раскрывает синонимы."""
+        """Очищает текст, проверяет ВСЕ варианты нормальной формы слова."""
         if not text: 
             return ""
         
-        # 1. Нижний регистр и очистка
         text = str(text).lower()
         text = re.sub(r'<[^>]+>', ' ', text)
         text = re.sub(r'[^\w\s]', ' ', text)
@@ -105,23 +104,34 @@ class SystemKnowledgeBase:
         for word in words:
             if word in self.stop_words or len(word) < 2:
                 continue
+            
+            # Добавляем исходное слово (чтобы fuzzy search работал и по точному вхождению)
+            processed_words.append(word)
+
+            # Получаем ВСЕ варианты разбора слова
+            # Например, для "кружки": [OpencorporaTag('NOUN,inan,femn...'), OpencorporaTag('NOUN,inan,masc...')]
+            parses = self.morph.parse(word)
+            
+            # Собираем уникальные нормальные формы
+            # Для "кружки" это будет {'кружка', 'кружок'}
+            normal_forms = set(p.normal_form for p in parses)
+            
+            synonym_found = False
+            
+            # Проверяем каждую нормальную форму: есть ли она в синонимах?
+            for nf in normal_forms:
+                if nf in self.synonyms:
+                    processed_words.append(self.synonyms[nf])
+                    synonym_found = True
+            
+            # Если это не синоним, просто добавляем самую вероятную нормальную форму
+            # (чтобы "системы" превратилось в "система" для поиска)
+            if not synonym_found:
+                processed_words.append(parses[0].normal_form)
                 
-            # 2. Лемматизация (приведение к нормальной форме)
-            # "кружки" -> "кружок"
-            parsed = self.morph.parse(word)[0]
-            normal_form = parsed.normal_form
-            
-            processed_words.append(word) # Оставляем исходное слово
-            
-            # Если нормальная форма отличается, добавляем и её (для надежности поиска)
-            if normal_form != word:
-                processed_words.append(normal_form)
-            
-            # 3. Проверка синонимов по нормальной форме
-            if normal_form in self.synonyms:
-                processed_words.append(self.synonyms[normal_form])
-                
-        return " ".join(processed_words)
+        # Убираем дубликаты слов в итоговой строке для чистоты
+        unique_words = list(dict.fromkeys(processed_words))
+        return " ".join(unique_words)
     
     def load_data_from_csv(self, systems_csv_path, contacts_csv_path):
         """Загружает, чистит, убирает дубли и объединяет данные."""
