@@ -72,7 +72,7 @@
         {#if isExpanded}
             <div class="summary-content">
                 {#if isLoadingSummary}
-                    <div class="loading">🤖 Нейросеть читает документацию...</div>
+                    <div class="loading">Обработка документации ...</div>
                 {:else}
                     <p>{summary}</p>
                 {/if}
