@@ -1,219 +1,334 @@
+import pandas as pd
+import sqlite3
+import ftfy
+import urllib.parse
+import re
+from atlassian import Confluence
+from rapidfuzz import fuzz
 import logging
-import os
-import math
-from typing import List, Optional
-from datetime import datetime, timedelta
-import httpx
+import pymorphy2
 
-from fastapi import FastAPI, Query, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from fastapi.middleware.cors import CORSMiddleware
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+class SystemKnowledgeBase:
+    def __init__(self, db_path="systems_kb.db"):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(self.db_path)
+        self._init_db()
 
-from knowledge_base import SystemKnowledgeBase
-
-SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-me")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 дней
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("SearchAPI")
-
-app = FastAPI(
-    title="Корпоративный Поиск Систем",
-    description="REST API для умного поиска по базе знаний систем",
-    version="1.0.0"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-try:
-    kb = SystemKnowledgeBase()
-    logger.info("База знаний успешно инициализирована")
-except Exception as e:
-    logger.error(f"Ошибка инициализации базы знаний: {e}")
-    raise e
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-# --- Модели данных (Pydantic) ---
-# Это нужно, чтобы API возвращал красивый JSON и валидировал типы
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    
-class SearchResultItem(BaseModel):
-    id: int
-    product_name: str
-    status: Optional[str] = None
-    owner_name: Optional[str] = None
-    owner_email: Optional[str] = None
-    owner_telegram: Optional[str] = None
-    description: Optional[str] = None
-    wiki_url: Optional[str] = None
-    jira_url: Optional[str] = None
-    repo_url: Optional[str] = None
-    search_score: float
-    has_wiki_content: bool = False
-
-# --- Вспомогательные функции ---
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    
-    user = kb.get_user(username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-def clean_nans(data_list):
-    """
-    Pandas/SQLite могут возвращать NaN (Not a Number) для пустых полей.
-    JSON стандарт не поддерживает NaN, поэтому заменяем их на None (null).
-    """
-    cleaned = []
-    for item in data_list:
-        new_item = {}
-        for k, v in item.items():
-            if isinstance(v, float) and math.isnan(v):
-                new_item[k] = None
-            else:
-                new_item[k] = v
-        cleaned.append(new_item)
-    return cleaned
-
-# --- Эндпоинты ---
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-
-class SummaryResponse(BaseModel):
-    summary: str
-
-@app.get("/summarize/{sys_id}", response_model=SummaryResponse)
-async def summarize_system(sys_id: int, current_user: tuple = Depends(get_current_user)):
-    """
-    Отправляет контент Wiki в Ollama для генерации краткой выжимки.
-    """
-    data = kb.get_system_wiki(sys_id)
-    
-    if not data or not data[0]:
-        return {"summary": "Для этой системы нет данных из Wiki."}
-    
-    wiki_text = data[0]
-    product_name = data[1]
-    
-    # Обрезаем текст, чтобы не перегрузить контекст модели (например, первые 3000 символов)
-    truncated_text = wiki_text[:3000]
-    
-    prompt = f"""
-    Ты технический писатель. Проанализируй следующий текст документации о системе "{product_name}".
-    Сделай краткую выжимку (summary) на русском языке: для чего нужна система, кто основные пользователи и какие главные функции.
-    Не используй вводные фразы, сразу пиши суть. Максимум 3-4 предложения.
-    
-    Текст:
-    {truncated_text}
-    """
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False
-                }
-            )
-            response.raise_for_status()
-            result = response.json()
-            return {"summary": result.get("response", "Не удалось получить ответ от модели.")}
-            
-    except Exception as e:
-        logger.error(f"Ollama error: {e}")
-        return {"summary": "Ошибка связи с нейросетью. Убедитесь, что Ollama запущена."}
-
-@app.get("/health")
-async def health_check():
-    """Проверка работоспособности сервиса."""
-    return {"status": "ok"}
-
-@app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = kb.get_user(form_data.username)
-    if not user or not verify_password(form_data.password, user[1]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token = create_access_token(data={"sub": user[0]})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.get("/search", response_model=List[SearchResultItem])
-async def search_systems(
-    q: str = Query(..., min_length=2),
-    limit: int = Query(10, ge=1, le=50),
-    current_user: tuple = Depends(get_current_user)
-):
-    if not q.strip():
-        return []
-    
-    logger.info(f"User {current_user[0]} searching for: {q}")
-    
-    try:
-        # Получаем "сырые" результаты из базы (там есть поле wiki_content)
-        raw_results = kb.fuzzy_search(q, limit=limit)
+        # --- НАСТРОЙКИ ДЛЯ УМНОГО ПОИСКА ---
+        self.morph = pymorphy2.MorphAnalyzer()
         
-        processed_results = []
-        for res in raw_results:
-            # 2. Вычисляем флаг: True, если контент есть и он не пустой
-            content = res.get('wiki_content')
-            res['has_wiki_content'] = bool(content and str(content).strip())
-            
-            # Удаляем сам текст, чтобы не гонять мегабайты данных в списке
-            if 'wiki_content' in res:
-                del res['wiki_content']
-                
-            processed_results.append(res)
+        # 1. Стоп-слова
+        self.stop_words = {
+            'система', 'сервис', 'продукт', 'приложение', 'веб', 'для', 'на', 'в', 'и', 
+            'или', 'по', 'с', 'от', 'как', 'это', 'предназначен', 'автоматизации', 
+            'обеспечения', 'реализации', 'функций', 'процессов', 'аис', 'гис', 'егис'
+        }
 
-        return clean_nans(processed_results)
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        # 2. Синонимы
+        self.synonyms = {
+            "сад": "доу дошкольное",
+            "садик": "доу дошкольное",
+            "школа": "оу сош общее образование",
+            "колледж": "спо профтех",
+            "вуз": "впо высшее",
+            "кружок": "удо дополнительное",
+            "секция": "удо дополнительное",
+            "еда": "питание",
+            "проход": "скуд турникет",
+            "ученик": "обучающийся учащийся",
+        }
+        
+    def _init_db(self):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS systems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_name TEXT,
+                status TEXT,
+                owner_name TEXT,
+                owner_email TEXT,
+                owner_telegram TEXT,
+                description TEXT,
+                wiki_url TEXT,
+                jira_url TEXT,
+                repo_url TEXT,
+                wiki_content TEXT,
+                ai_keywords TEXT
+            )
+        ''')
+        
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN ai_keywords TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        self.conn.commit()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                hashed_password TEXT
+            )
+        ''')
+        self.conn.commit()
+        
+    def get_user(self, username):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT username, hashed_password FROM users WHERE username = ?", (username,))
+        return cursor.fetchone()
+
+    def create_user(self, username, hashed_password):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("INSERT INTO users (username, hashed_password) VALUES (?, ?)", (username, hashed_password))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        
+    def fix_encoding(self, text):
+        if pd.isna(text):
+            return ""
+        return ftfy.fix_text(str(text))
+
+    def preprocess_text(self, text, expand_synonyms=True):
+        if not text: return ""
+        
+        text = str(text).lower()
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'[^\w\s]', ' ', text)
+        
+        words = text.split()
+        result_words = []
+        
+        for word in words:
+            if word in self.stop_words or len(word) < 2: continue
+            
+            # Лемматизация
+            parses = self.morph.parse(word)
+            normal_form = parses[0].normal_form # Берем нормальную форму сразу
+            normal_forms = set(p.normal_form for p in parses)
+            
+            # Поиск синонимов
+            synonyms_found = []
+            for nf in normal_forms:
+                if nf in self.synonyms:
+                    synonyms_found.append(self.synonyms[nf])
+            
+            if expand_synonyms:
+                if synonyms_found:
+                    result_words.extend(synonyms_found)
+                else:
+                    result_words.append(normal_form)
+            else:
+                # ИСПРАВЛЕНО: Возвращаем нормальную форму, а не сырое слово, 
+                # чтобы поиск работал корректно (системы == система)
+                result_words.append(normal_form)
+                
+        return " ".join(list(dict.fromkeys(result_words)))
     
+    def load_data_from_csv(self, systems_csv_path, contacts_csv_path):
+        logging.info("Загрузка данных из CSV...")
+        
+        df_systems = pd.read_csv(systems_csv_path)
+        df_contacts = pd.read_csv(contacts_csv_path)
+
+        df_systems.columns = [self.fix_encoding(col) for col in df_systems.columns]
+        df_contacts.columns = [self.fix_encoding(col) for col in df_contacts.columns]
+
+        for col in df_systems.columns:
+            df_systems[col] = df_systems[col].apply(self.fix_encoding)
+        for col in df_contacts.columns:
+            df_contacts[col] = df_contacts[col].apply(self.fix_encoding)
+
+        df_systems['Владелец'] = df_systems['Владелец'].str.strip()
+        df_contacts['Name'] = df_contacts['Name'].str.strip()
+
+        df_contacts = df_contacts.drop_duplicates(subset=['Name'], keep='first')
+        df_systems = df_systems.drop_duplicates(subset=['Продукт'], keep='first')
+
+        merged_df = pd.merge(
+            df_systems, 
+            df_contacts, 
+            left_on='Владелец', 
+            right_on='Name', 
+            how='left'
+        )
+
+        cursor = self.conn.cursor()
+        
+        for _, row in merged_df.iterrows():
+            product_name = row.get('Продукт')
+            
+            cursor.execute("SELECT id FROM systems WHERE product_name = ?", (product_name,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                sys_id = existing[0]
+                cursor.execute('''
+                    UPDATE systems SET 
+                        status=?, owner_name=?, owner_email=?, owner_telegram=?,
+                        description=?, wiki_url=?, jira_url=?, repo_url=?
+                    WHERE id=?
+                ''', (
+                    row.get('Статус'), row.get('Владелец'), row.get('Email'), row.get('Telegram'),
+                    row.get('Назначение'), row.get('Wiki'), row.get('Jira'), row.get('Repo'), sys_id
+                ))
+            else:
+                cursor.execute('''
+                    INSERT INTO systems (
+                        product_name, status, owner_name, owner_email, owner_telegram,
+                        description, wiki_url, jira_url, repo_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    product_name, row.get('Статус'), row.get('Владелец'), row.get('Email'), row.get('Telegram'),
+                    row.get('Назначение'), row.get('Wiki'), row.get('Jira'), row.get('Repo')
+                ))
+        
+        self.conn.commit()
+        logging.info("Данные успешно обновлены в БД.")
+
+    def get_page_content(self, confluence, url):
+        decoded_url = urllib.parse.unquote(url)
+    
+        def get_homepage_by_space_key(key):
+            try:
+                space_info = confluence.get_space(key, expand='homepage')
+                if space_info and 'homepage' in space_info:
+                    return confluence.get_page_by_id(space_info['homepage']['id'], expand='body.storage')
+            except Exception:
+                pass
+            return None
+
+        match_id = re.search(r'pageId=(\d+)', url)
+        if match_id:
+            return confluence.get_page_by_id(match_id.group(1), expand='body.storage')
+
+        match_display_page = re.search(r'/display/([^/]+)/([^/?#]+)', decoded_url)
+        if match_display_page:
+            return confluence.get_page_by_title(match_display_page.group(1), match_display_page.group(2).replace('+', ' '), expand='body.storage')
+
+        match_overview = re.search(r'/spaces/([^/]+)/overview', decoded_url)
+        if match_overview:
+            return get_homepage_by_space_key(match_overview.group(1))
+
+        # ИСПРАВЛЕНО: Убрана разорванная строка и исправлен regex
+        match_space_home = re.search(r'/display/([^/?#]+)/?$', decoded_url)
+        if match_space_home:
+            return get_homepage_by_space_key(match_space_home.group(1))
+
+        return None
+
+    def sync_confluence_content(self, confluence_url, username, api_token):
+        logging.info("Начало синхронизации с Confluence...")
+        try:
+            confluence = Confluence(url=confluence_url, username=username, token=api_token, cloud=False)
+        except Exception as e:
+            logging.error(f"Ошибка подключения к Confluence: {e}")
+            return
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, wiki_url FROM systems WHERE wiki_url LIKE '%http%'")
+        rows = cursor.fetchall()
+
+        for sys_id, url in rows:
+            try:
+                page_data = self.get_page_content(confluence, url)
+                if page_data and 'body' in page_data:
+                    raw_html = page_data['body']['storage']['value']
+                    clean_text = re.sub(r'<[^>]+>', ' ', raw_html)
+                    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                    
+                    cursor.execute("UPDATE systems SET wiki_content = ? WHERE id = ?", (clean_text, sys_id))
+                    logging.info(f"Обновлен контент для ID {sys_id}")
+            except Exception as e:
+                logging.warning(f"Не удалось скачать контент для {url}: {e}")
+
+        self.conn.commit()
+        logging.info("Синхронизация завершена.")
+    
+    def get_system_wiki(self, sys_id):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT wiki_content, product_name FROM systems WHERE id = ?", (sys_id,))
+        return cursor.fetchone()
+
+    def fuzzy_search(self, query, limit=5):
+        df = pd.read_sql("SELECT * FROM systems", self.conn)
+        
+        # 1. Формируем ДВА варианта запроса
+        query_raw = self.preprocess_text(query, expand_synonyms=False)
+        query_synonyms = self.preprocess_text(query, expand_synonyms=True)
+        
+        logging.info(f"Raw: '{query_raw}' | Synonyms: '{query_synonyms}'")
+        
+        results = []
+        
+        for _, row in df.iterrows():
+            # Предобработка полей базы
+            clean_title = self.preprocess_text(row['product_name'], expand_synonyms=False)
+            clean_desc = self.preprocess_text(row['description'], expand_synonyms=False)
+            clean_wiki = self.preprocess_text(row['wiki_content'], expand_synonyms=False)
+            
+            # Обработка AI keywords (если они есть)
+            clean_ai = ""
+            if row['ai_keywords']:
+                clean_ai = self.preprocess_text(row['ai_keywords'], expand_synonyms=True)
+
+            # Сравниваем с RAW запросом
+            score_raw = max(
+                fuzz.token_set_ratio(query_raw, clean_title),
+                fuzz.token_set_ratio(query_raw, clean_desc)
+            )
+            
+            score_syn = 0
+            if query_raw != query_synonyms:
+                score_syn = max(
+                    fuzz.token_set_ratio(query_synonyms, clean_title),
+                    fuzz.token_set_ratio(query_synonyms, clean_desc)
+                )
+            
+            base_score = max(score_raw, score_syn)
+            
+            # Wiki
+            wiki_score = 0
+            if clean_wiki:
+                wiki_score = fuzz.token_set_ratio(query_synonyms, clean_wiki)
+            
+            # AI Keywords
+            score_ai = 0
+            if clean_ai:
+                # ИСПРАВЛЕНО: clean_query не существовал, заменен на query_synonyms
+                score_ai = fuzz.token_set_ratio(query_synonyms, clean_ai)
+            
+            # ИСПРАВЛЕНО: Формула теперь учитывает score_ai
+            # Веса: База (50%) + AI (30%) + Wiki (20%)
+            final_score = (base_score * 0.5) + (score_ai * 0.3) + (wiki_score * 0.2)
+            
+            # Бонусы
+            status = str(row['status']).lower()
+            if 'эксплуатации' in status or 'prod' in status:
+                final_score += 5 # Немного уменьшил бонус, чтобы не перебивать релевантность
+            
+            if final_score > 45:
+                res = row.to_dict()
+                res['search_score'] = final_score
+                results.append(res)
+        
+        results.sort(key=lambda x: x['search_score'], reverse=True)
+        return results[:limit]
+
 if __name__ == "__main__":
-    import uvicorn
-    # Запуск сервера: host="0.0.0.0" делает его доступным в локальной сети
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    kb = SystemKnowledgeBase()
+    # kb.load_data_from_csv("augmented_systems.csv", "contacts.csv")
+    
+    user_query = "Система для зачисления в детские сады"
+    print(f"\n--- Поиск по запросу: '{user_query}' ---\n")
+    
+    results = kb.fuzzy_search(user_query)
+    
+    for res in results:
+        print(f"[{res['search_score']:.1f}] {res['product_name']}")
+        print(f"    Владелец: {res['owner_name']}")
+        print("-" * 40)
