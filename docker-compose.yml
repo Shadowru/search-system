@@ -17,6 +17,8 @@ services:
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      # Включаем логи доступа, чтобы видеть, кого баним (опционально)
+      - "--accesslog=true" 
     ports:
       - "80:80"
       - "443:443"
@@ -33,20 +35,36 @@ services:
     env_file:
       - .env
     environment:
-      # Обращаемся к контейнеру 'ollama' по порту 11434
       - OLLAMA_URL=http://ollama:11434/api/generate
       - OLLAMA_MODEL=llama3
     volumes:
       - ./backend/systems_kb.db:/app/systems_kb.db
     depends_on:
-      - ollama # Ждем запуска ollama
+      - ollama
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`${DOMAIN_NAME}`) && PathPrefix(`/api`)"
+      
+      # --- Определение Middleware для защиты ---
+      # 1. Rate Limit: Макс 10 запросов в секунду (среднее), всплеск до 50.
+      - "traefik.http.middlewares.mw-ratelimit.ratelimit.average=10"
+      - "traefik.http.middlewares.mw-ratelimit.ratelimit.burst=50"
+      
+      # 2. Блокировка по User-Agent (Regex). Если совпадает - 403 Forbidden (или просто не сработает роут, если использовать в Rule).
+      # Здесь мы используем chain, чтобы применить это как middleware, но Traefik не имеет встроенного "Block by Header" middleware.
+      # ЛУЧШИЙ СПОСОБ: Добавить условие в само правило роутера (см. ниже в rule).
+      
+      # --- Роутер ---
+      # Добавлено условие: && !HeadersRegexp(...) - если User-Agent совпадает с регуляркой, правило не сработает (404)
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN_NAME}`) && PathPrefix(`/api`) && !HeadersRegexp(`User-Agent`, `.*(SemrushBot|AhrefsBot|MJ12bot|YandexBot|DotBot|PetalBot|Bytespider|ClaudeBot|GPTBot|curl|python-requests).*`)"
+      
       - "traefik.http.routers.backend.entrypoints=websecure"
       - "traefik.http.routers.backend.tls.certresolver=myresolver"
+      
+      # --- Применение Middleware ---
       - "traefik.http.middlewares.api-strip.stripprefix.prefixes=/api"
-      - "traefik.http.routers.backend.middlewares=api-strip"
+      # Применяем стриппинг префикса И лимит запросов
+      - "traefik.http.routers.backend.middlewares=api-strip,mw-ratelimit"
+      
       - "traefik.http.services.backend.loadbalancer.server.port=8000"
 
   # --- FRONTEND ---
@@ -58,9 +76,21 @@ services:
       - backend
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME}`)"
+      
+      # Те же правила защиты для фронтенда
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN_NAME}`) && !HeadersRegexp(`User-Agent`, `.*(SemrushBot|AhrefsBot|MJ12bot|YandexBot|DotBot|PetalBot|Bytespider|ClaudeBot|GPTBot|curl|python-requests).*`)"
+      
       - "traefik.http.routers.frontend.entrypoints=websecure"
       - "traefik.http.routers.frontend.tls.certresolver=myresolver"
+      
+      # Используем тот же Rate Limit, что определили в backend (или можно создать новый)
+      # Обратите внимание: middleware mw-ratelimit определен в сервисе backend, 
+      # чтобы использовать его здесь, нужно ссылаться как "mw-ratelimit@docker" или продублировать определение.
+      # Для надежности продублируем определение здесь:
+      - "traefik.http.middlewares.fe-ratelimit.ratelimit.average=20"
+      - "traefik.http.middlewares.fe-ratelimit.ratelimit.burst=100"
+      - "traefik.http.routers.frontend.middlewares=fe-ratelimit"
+      
       - "traefik.http.services.frontend.loadbalancer.server.port=80"
 
   # --- OLLAMA (AI) ---
@@ -69,10 +99,11 @@ services:
     container_name: ollama
     restart: always
     volumes:
-      - ollama_data:/root/.ollama # Сохраняем модели на диске
-    ports:
-      - "11434:11434" # Оставляем доступ снаружи для удобства (можно убрать)
-    # Если у вас есть NVIDIA GPU, раскомментируйте блок ниже:
+      - ollama_data:/root/.ollama
+    # ports:
+      # - "11434:11434"  <-- ВАЖНО: Закомментировано для безопасности. 
+      # Доступ снаружи к AI модели - это огромная дыра для сканеров.
+      # Backend все равно увидит ollama по внутренней сети.
     # deploy:
     #   resources:
     #     reservations:
@@ -82,4 +113,4 @@ services:
     #           capabilities: [gpu]
 
 volumes:
-  ollama_data: # Объявляем том для моделей
+  ollama_data:
