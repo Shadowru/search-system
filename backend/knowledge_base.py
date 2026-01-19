@@ -44,7 +44,6 @@ class SystemKnowledgeBase:
         }
         
     def _init_db(self):
-        """Создает структуру таблицы, если она не существует."""
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS systems (
@@ -59,15 +58,15 @@ class SystemKnowledgeBase:
                 jira_url TEXT,
                 repo_url TEXT,
                 wiki_content TEXT,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ai_keywords TEXT  -- <--- НОВАЯ КОЛОНКА
             )
         ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
-                hashed_password TEXT
-            )
-        ''')
+        
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN ai_keywords TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
         self.conn.commit()
         
     def get_user(self, username):

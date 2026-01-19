@@ -56,7 +56,7 @@ class SystemKnowledgeBase:
                 jira_url TEXT,
                 repo_url TEXT,
                 wiki_content TEXT,
-                ai_keywords TEXT
+                ai_keywords TEXT  -- <--- НОВАЯ КОЛОНКА
             )
         ''')
         
