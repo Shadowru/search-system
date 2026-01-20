@@ -36,6 +36,17 @@ class SystemRepository:
                 hashed_password TEXT
             )
         ''')
+        
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN ai_keywords TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN product_code TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         self.conn.commit()
         
     def get_user(self, username):
