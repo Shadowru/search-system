@@ -7,7 +7,7 @@ from app.config import JIRA_DB_NAME
 
 router = APIRouter(tags=["Systems & Topics"])
 
-@router.get("/api/systems/{system_code}/topics", response_model=List[TopicInfo])
+@router.get("/systems/{system_code}/topics", response_model=List[TopicInfo])
 def get_topics_by_system(system_code: str):
     """
     Возвращает список топиков для указанной системы из jira_data.db.
