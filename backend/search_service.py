@@ -52,6 +52,7 @@ class SystemKnowledgeBase:
             CREATE TABLE IF NOT EXISTS systems (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_name TEXT,
+                product_code TEXT,
                 status TEXT,
                 owner_name TEXT,
                 owner_email TEXT,
@@ -70,6 +71,11 @@ class SystemKnowledgeBase:
         except sqlite3.OperationalError:
             pass
             
+        try:
+            cursor.execute("ALTER TABLE systems ADD COLUMN product_code TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         self.conn.commit()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
