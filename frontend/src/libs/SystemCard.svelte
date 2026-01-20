@@ -97,7 +97,7 @@
 
     {#if showTopics}
       <!-- Передаем system.code или system.id в зависимости от того, что ждет API -->
-      <TopicsTable systemCode={system.code || system.id} />
+      <TopicsTable systemCode={system.code} />
     {/if}
   </div>
 

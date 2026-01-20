@@ -208,3 +208,6 @@ __marimo__/
 
 systems_kb.db
 jira_data.db
+node_modules
+dist
+package-lock.json
