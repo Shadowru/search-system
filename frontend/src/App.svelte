@@ -10,6 +10,7 @@
   let error = null;
   let hasSearched = false;
 
+
   onMount(() => {
     token = localStorage.getItem("token");
   });
