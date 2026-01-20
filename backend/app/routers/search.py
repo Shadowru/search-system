@@ -5,7 +5,7 @@ from app.config import logger
 
 router = APIRouter()
 
-@router.get("/search")
+@router.get("/api/search")
 def search_systems(
     q: str, 
     limit: int = 5, 

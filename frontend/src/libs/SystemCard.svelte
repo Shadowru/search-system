@@ -1,6 +1,7 @@
 <script>
   import TopicsTable from "./TopicsTable.svelte";
   export let system;
+  const API_HOST = import.meta.env.VITE_API_HOST || "";
 
   let isExpanded = false;
   let summary = null;
@@ -29,7 +30,7 @@
       isLoadingSummary = true;
       try {
         const token = localStorage.getItem("token");
-        const res = await fetch(`/api/summarize/${system.id}`, {
+        const res = await fetch(`${API_HOST}/api/summarize/${system.id}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -58,7 +59,7 @@
             // Используем system.code или system.id
             const code = system.product_code;// || system.id; 
             
-            const res = await fetch(`/api/systems/${encodeURIComponent(code)}/topics`, {
+            const res = await fetch(`${API_HOST}/api/systems/${encodeURIComponent(code)}/topics`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }

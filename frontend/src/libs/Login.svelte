@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   const dispatch = createEventDispatcher();
+  const API_HOST = import.meta.env.VITE_API_HOST || "";
 
   let username = "";
   let password = "";
@@ -16,7 +17,7 @@
     formData.append('password', password);
 
     try {
-      const res = await fetch('/api/token', {
+      const res = await fetch(`${API_HOST}/api/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData

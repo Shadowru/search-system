@@ -10,9 +10,34 @@ class SystemRepository:
         self._init_db()
 
     def _init_db(self):
-        # ... код создания таблиц (systems, users) ...
-        pass
-
+        """Создает структуру таблицы, если она не существует."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS systems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_name TEXT,
+                product_code TEXT,
+                status TEXT,
+                owner_name TEXT,
+                owner_email TEXT,
+                owner_telegram TEXT,
+                description TEXT,
+                wiki_url TEXT,
+                jira_url TEXT,
+                repo_url TEXT,
+                wiki_content TEXT,
+                ai_keywords TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                hashed_password TEXT
+            )
+        ''')
+        self.conn.commit()
+        
     def get_user(self, username):
         cursor = self.conn.cursor()
         cursor.execute("SELECT username, hashed_password FROM users WHERE username = ?", (username,))
@@ -26,4 +51,13 @@ class SystemRepository:
         cursor = self.conn.cursor()
         cursor.execute("UPDATE systems SET wiki_content = ? WHERE id = ?", (content, sys_id))
         self.conn.commit()
+
+    def create_user(self, username, hashed_password):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("INSERT INTO users (username, hashed_password) VALUES (?, ?)", (username, hashed_password))
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
 

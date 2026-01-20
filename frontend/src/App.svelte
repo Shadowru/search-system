@@ -3,6 +3,8 @@
   import SystemCard from "./libs/SystemCard.svelte";
   import Login from "./libs/Login.svelte";
 
+  const API_HOST = import.meta.env.VITE_API_HOST || "";
+
   let token = null;
   let query = "";
   let results = [];
@@ -32,16 +34,16 @@
 
     try {
       const response = await fetch(
-        `/api/search?q=${encodeURIComponent(query)}&limit=10`,
+        `${API_HOST}/api/search?q=${encodeURIComponent(query)}&limit=10`,
         {
           headers: {
-            Authorization: `Bearer ${token}`, // <--- ОТПРАВЛЯЕМ ТОКЕН
+            Authorization: `Bearer ${token}`,
           },
         },
       );
 
       if (response.status === 401) {
-        handleLogout(); // Токен протух, выкидываем на логин
+        handleLogout();
         return;
       }
 
