@@ -56,7 +56,7 @@
         try {
             const token = localStorage.getItem("token");
             // Используем system.code или system.id
-            const code = system.code || system.id; 
+            const code = system.code;// || system.id; 
             
             const res = await fetch(`/api/systems/${encodeURIComponent(code)}/topics`, {
                 headers: {
