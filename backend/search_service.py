@@ -1,4 +1,6 @@
 import pandas as pd
+import os
+from datetime import datetime, timedelta
 import sqlite3
 import ftfy
 import urllib.parse
@@ -9,12 +11,60 @@ import logging
 import pymorphy2
 
 # Импорты для FastAPI
-from fastapi import FastAPI, HTTPException
+from fastapi import  FastAPI, Query, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
 from pydantic import BaseModel
 from typing import List, Optional
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("SearchAPI")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-me")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 дней
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# --- Модели данных (Pydantic) ---
+# Это нужно, чтобы API возвращал красивый JSON и валидировал типы
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = kb.get_user(username)
+    if user is None:
+        raise credentials_exception
+    return user
+
 
 class SystemKnowledgeBase:
     def __init__(self, db_path="systems_kb.db"):
@@ -333,12 +383,26 @@ def read_root():
     return {"message": "Service is running. Available endpoints: /search, /systems/{code}/topics"}
 
 @app.get("/search")
-def search_systems(q: str, limit: int = 5):
+def search_systems(q: str, limit: int = 5, current_user: tuple = Depends(get_current_user)):
+    logger.info(f"User {current_user[0]} searching for: {q}")
     """
     Умный поиск по системам (fuzzy search).
     """
     results = kb.fuzzy_search(q, limit=limit)
     return results
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = kb.get_user(form_data.username)
+    if not user or not verify_password(form_data.password, user[1]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(data={"sub": user[0]})
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/systems/{system_code}/topics", response_model=List[TopicInfo])
 def get_topics_by_system(system_code: str):
