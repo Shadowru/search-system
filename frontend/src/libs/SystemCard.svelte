@@ -7,6 +7,10 @@
   let isLoadingSummary = false;
 
   let showTopics = false;
+  let topicsData = [];      // Храним данные здесь
+  let topicsLoading = false;
+  let topicsError = null;
+  let topicsLoaded = false; // Флаг, чтобы не грузить повторно
 
   // Цвета для статусов
   function getStatusClass(status) {
@@ -39,6 +43,39 @@
       } finally {
         isLoadingSummary = false;
       }
+    }
+  }
+  async function toggleTopics() {
+    showTopics = !showTopics;
+
+    // Если открываем и данные еще не загружены — грузим
+    if (showTopics && !topicsLoaded) {
+        topicsLoading = true;
+        topicsError = null;
+        
+        try {
+            const token = localStorage.getItem("token");
+            // Используем system.code или system.id
+            const code = system.code || system.id; 
+            
+            const res = await fetch(`/api/systems/${encodeURIComponent(code)}/topics`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (res.status === 401) {
+                throw new Error("Нужна авторизация");
+            }
+            if (!res.ok) throw new Error("Ошибка загрузки");
+
+            topicsData = await res.json();
+            topicsLoaded = true; // Запоминаем, что загрузили
+        } catch (e) {
+            topicsError = e.message;
+        } finally {
+            topicsLoading = false;
+        }
     }
   }
 </script>
@@ -84,10 +121,7 @@
   {/if}
 
   <div class="topics-section">
-    <button
-      class="action-btn topics-btn"
-      on:click={() => (showTopics = !showTopics)}
-    >
+    <button class="action-btn topics-btn" on:click={toggleTopics}>
       {#if showTopics}
         🔽 Скрыть топики Kafka
       {:else}
@@ -96,8 +130,12 @@
     </button>
 
     {#if showTopics}
-      <!-- Передаем system.code или system.id в зависимости от того, что ждет API -->
-      <TopicsTable systemCode={system.code} />
+      <!-- Передаем данные и состояние загрузки в компонент -->
+      <TopicsTable 
+        topics={topicsData} 
+        loading={topicsLoading} 
+        error={topicsError} 
+      />
     {/if}
   </div>
 
@@ -193,29 +231,14 @@
     color: #4b5563;
     margin-bottom: 1rem;
   }
-  .topics-section {
-    margin-bottom: 1rem;
-  }
-
-  /* Общий класс для кнопок действий внутри карточки */
+  .topics-section { margin-bottom: 1rem; }
   .action-btn {
-    background: none;
-    padding: 5px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.85rem;
-    transition: all 0.2s;
-    margin-right: 10px; /* отступ, если кнопки будут рядом */
+    background: none; padding: 5px 10px; border-radius: 6px;
+    cursor: pointer; font-size: 0.85rem; transition: all 0.2s; margin-right: 10px;
   }
+  .topics-btn { border: 1px solid #059669; color: #059669; }
+  .topics-btn:hover { background: #ecfdf5; }
 
-  /* Стили конкретно для кнопки топиков */
-  .topics-btn {
-    border: 1px solid #059669;
-    color: #059669;
-  }
-  .topics-btn:hover {
-    background: #ecfdf5;
-  }
 
   /* AI Section Styles */
   .ai-section {

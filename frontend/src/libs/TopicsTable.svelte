@@ -1,86 +1,43 @@
 <script>
-    import { onMount } from "svelte";
+  
+  export let topics = []; 
+  export let loading = false;
+  export let error = null;
 
-    export let systemCode = ""; // Входной параметр: код системы
+  // Локальные фильтры и сортировка остаются здесь
+  let searchTerm = "";
+  let roleFilter = "ALL"; 
+  let sortColumn = "topic_name";
+  let sortDirection = 1;
 
-    let topics = [];
-    let loading = false;
-    let error = null;
+  // Реактивность для фильтрации (работает с пришедшими topics)
+  $: processedTopics = topics
+    .filter((t) => {
+      const matchText = 
+        t.topic_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (t.jira_key && t.jira_key.toLowerCase().includes(searchTerm.toLowerCase()));
+      
+      const matchRole = roleFilter === "ALL" || t.role.toUpperCase() === roleFilter;
 
-    // Состояние фильтров и сортировки
-    let searchTerm = "";
-    let roleFilter = "ALL"; // ALL, PRODUCER, CONSUMER
-    let sortColumn = "topic_name";
-    let sortDirection = 1; // 1 = asc, -1 = desc
-
-    // Загрузка данных
-    async function loadTopics() {
-        if (!systemCode) return;
-        loading = true;
-        error = null;
-        try {
-            const token = localStorage.getItem("token");
-
-            const res = await fetch(
-                `/api/systems/${encodeURIComponent(systemCode)}/topics`,
-                {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        "Content-Type": "application/json",
-                    },
-                },
-            );
-
-            if (res.status === 401) {
-                throw new Error("Ошибка авторизации. Попробуйте перезайти.");
-            }
-            if (!res.ok) throw new Error("Не удалось загрузить топики");
-            topics = await res.json();
-        } catch (e) {
-            error = e.message;
-        } finally {
-            loading = false;
-        }
-    }
-
-    // Реактивная переменная: отфильтрованные и отсортированные данные
-    $: processedTopics = topics
-        .filter((t) => {
-            // 1. Фильтр по тексту (ищем в имени топика и jira_key)
-            const matchText =
-                t.topic_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                t.jira_key.toLowerCase().includes(searchTerm.toLowerCase());
-
-            // 2. Фильтр по роли
-            const matchRole =
-                roleFilter === "ALL" || t.role.toUpperCase() === roleFilter;
-
-            return matchText && matchRole;
-        })
-        .sort((a, b) => {
-            // 3. Сортировка
-            const valA = (a[sortColumn] || "").toString().toLowerCase();
-            const valB = (b[sortColumn] || "").toString().toLowerCase();
-
-            if (valA < valB) return -1 * sortDirection;
-            if (valA > valB) return 1 * sortDirection;
-            return 0;
-        });
-
-    // Обработчик клика по заголовку для сортировки
-    function handleSort(column) {
-        if (sortColumn === column) {
-            sortDirection *= -1; // меняем направление
-        } else {
-            sortColumn = column;
-            sortDirection = 1; // сброс на asc
-        }
-    }
-
-    // Загружаем при монтировании
-    onMount(() => {
-        loadTopics();
+      return matchText && matchRole;
+    })
+    .sort((a, b) => {
+      const valA = (a[sortColumn] || "").toString().toLowerCase();
+      const valB = (b[sortColumn] || "").toString().toLowerCase();
+      
+      if (valA < valB) return -1 * sortDirection;
+      if (valA > valB) return 1 * sortDirection;
+      return 0;
     });
+
+  function handleSort(column) {
+    if (sortColumn === column) {
+      sortDirection *= -1;
+    } else {
+      sortColumn = column;
+      sortDirection = 1;
+    }
+  }
 </script>
 
 <div class="topics-container">
