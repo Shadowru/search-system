@@ -8,13 +8,18 @@ from rapidfuzz import fuzz
 import logging
 import pymorphy2
 
+# Импорты для FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class SystemKnowledgeBase:
     def __init__(self, db_path="systems_kb.db"):
         self.db_path = db_path
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False) # check_same_thread=False нужен для FastAPI
         self._init_db()
 
         # --- НАСТРОЙКИ ДЛЯ УМНОГО ПОИСКА ---
@@ -56,7 +61,7 @@ class SystemKnowledgeBase:
                 jira_url TEXT,
                 repo_url TEXT,
                 wiki_content TEXT,
-                ai_keywords TEXT  -- <--- НОВАЯ КОЛОНКА
+                ai_keywords TEXT
             )
         ''')
         
@@ -108,7 +113,7 @@ class SystemKnowledgeBase:
             
             # Лемматизация
             parses = self.morph.parse(word)
-            normal_form = parses[0].normal_form # Берем нормальную форму сразу
+            normal_form = parses[0].normal_form 
             normal_forms = set(p.normal_form for p in parses)
             
             # Поиск синонимов
@@ -123,8 +128,6 @@ class SystemKnowledgeBase:
                 else:
                     result_words.append(normal_form)
             else:
-                # ИСПРАВЛЕНО: Возвращаем нормальную форму, а не сырое слово, 
-                # чтобы поиск работал корректно (системы == система)
                 result_words.append(normal_form)
                 
         return " ".join(list(dict.fromkeys(result_words)))
@@ -214,8 +217,7 @@ class SystemKnowledgeBase:
         if match_overview:
             return get_homepage_by_space_key(match_overview.group(1))
 
-        # ИСПРАВЛЕНО: Убрана разорванная строка и исправлен regex
-        match_space_home = re.search(r'/display/([^/?#]+)/?$', decoded_url)
+        match_space_home = re.search(r'/display/([^/?#]+)/?', decoded_url)
         if match_space_home:
             return get_homepage_by_space_key(match_space_home.group(1))
 
@@ -257,7 +259,6 @@ class SystemKnowledgeBase:
     def fuzzy_search(self, query, limit=5):
         df = pd.read_sql("SELECT * FROM systems", self.conn)
         
-        # 1. Формируем ДВА варианта запроса
         query_raw = self.preprocess_text(query, expand_synonyms=False)
         query_synonyms = self.preprocess_text(query, expand_synonyms=True)
         
@@ -266,17 +267,14 @@ class SystemKnowledgeBase:
         results = []
         
         for _, row in df.iterrows():
-            # Предобработка полей базы
             clean_title = self.preprocess_text(row['product_name'], expand_synonyms=False)
             clean_desc = self.preprocess_text(row['description'], expand_synonyms=False)
             clean_wiki = self.preprocess_text(row['wiki_content'], expand_synonyms=False)
             
-            # Обработка AI keywords (если они есть)
             clean_ai = ""
             if row['ai_keywords']:
                 clean_ai = self.preprocess_text(row['ai_keywords'], expand_synonyms=True)
 
-            # Сравниваем с RAW запросом
             score_raw = max(
                 fuzz.token_set_ratio(query_raw, clean_title),
                 fuzz.token_set_ratio(query_raw, clean_desc)
@@ -291,25 +289,19 @@ class SystemKnowledgeBase:
             
             base_score = max(score_raw, score_syn)
             
-            # Wiki
             wiki_score = 0
             if clean_wiki:
                 wiki_score = fuzz.token_set_ratio(query_synonyms, clean_wiki)
             
-            # AI Keywords
             score_ai = 0
             if clean_ai:
-                # ИСПРАВЛЕНО: clean_query не существовал, заменен на query_synonyms
                 score_ai = fuzz.token_set_ratio(query_synonyms, clean_ai)
             
-            # ИСПРАВЛЕНО: Формула теперь учитывает score_ai
-            # Веса: База (50%) + AI (30%) + Wiki (20%)
             final_score = (base_score * 0.5) + (score_ai * 0.3) + (wiki_score * 0.2)
             
-            # Бонусы
             status = str(row['status']).lower()
             if 'эксплуатации' in status or 'prod' in status:
-                final_score += 5 # Немного уменьшил бонус, чтобы не перебивать релевантность
+                final_score += 5 
             
             if final_score > 45:
                 res = row.to_dict()
@@ -319,16 +311,77 @@ class SystemKnowledgeBase:
         results.sort(key=lambda x: x['search_score'], reverse=True)
         return results[:limit]
 
+app = FastAPI(title="Unified Systems & Topics Service")
+
+kb = SystemKnowledgeBase()
+JIRA_DB_NAME = 'jira_data.db'
+
+class TopicInfo(BaseModel):
+    topic_name: str
+    role: str
+    jira_key: str
+    consumer_group: Optional[str] = None
+
+@app.get("/")
+def read_root():
+    return {"message": "Service is running. Available endpoints: /search, /systems/{code}/topics"}
+
+@app.get("/search")
+def search_systems(q: str, limit: int = 5):
+    """
+    Умный поиск по системам (fuzzy search).
+    """
+    results = kb.fuzzy_search(q, limit=limit)
+    return results
+
+@app.get("/systems/{system_code}/topics", response_model=List[TopicInfo])
+def get_topics_by_system(system_code: str):
+    """
+    Возвращает список топиков для указанной системы из jira_data.db.
+    system_code - код системы (например, SYS-001)
+    """
+    conn = sqlite3.connect(JIRA_DB_NAME)
+    conn.row_factory = sqlite3.Row 
+    cursor = conn.cursor()
+    
+    query = '''
+        SELECT 
+            d.topic_name, 
+            d.role, 
+            d.jira_key,
+            t.consumer_group
+        FROM system_dependencies d
+        LEFT JOIN topics_info t 
+            ON d.topic_name = t.topic_name AND d.jira_key = t.jira_key
+        WHERE d.system_code = ?
+    '''
+    
+    try:
+        cursor.execute(query, (system_code,))
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError as e:
+        # Обработка случая, если таблицы еще не созданы
+        logging.error(f"Database error: {e}")
+        conn.close()
+        return []
+        
+    conn.close()
+    
+    if not rows:
+        return [] 
+        
+    results = []
+    for row in rows:
+        results.append({
+            "topic_name": row['topic_name'],
+            "role": row['role'],
+            "jira_key": row['jira_key'],
+            "consumer_group": row['consumer_group']
+        })
+        
+    return results
+
 if __name__ == "__main__":
-    kb = SystemKnowledgeBase()
-    # kb.load_data_from_csv("augmented_systems.csv", "contacts.csv")
-    
-    user_query = "Система для зачисления в детские сады"
-    print(f"\n--- Поиск по запросу: '{user_query}' ---\n")
-    
-    results = kb.fuzzy_search(user_query)
-    
-    for res in results:
-        print(f"[{res['search_score']:.1f}] {res['product_name']}")
-        print(f"    Владелец: {res['owner_name']}")
-        print("-" * 40)
+    import uvicorn
+    # Запуск для локальной отладки
+    uvicorn.run(app, host="0.0.0.0", port=8000)
