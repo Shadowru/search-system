@@ -125,7 +125,7 @@
                             <td>
                                 {#if topic.jira_key}
                                     <a
-                                        href={`https://jira.example.com/browse/${topic.jira_key}`}
+                                        href={`https://jira.mos.social/browse/${topic.jira_key}`}
                                         target="_blank">{topic.jira_key}</a
                                     >
                                 {:else}
